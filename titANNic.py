@@ -48,10 +48,8 @@ def Clean(raw, test=False):
     return(raw)
 
 labels = labels.astype(float)
-raw = Clean(raw)
+data = Clean(raw)
 #Finally Clean
-data = Variable(torch.from_numpy(raw).type(dtype))
-labels = Variable(torch.from_numpy(labels).type(dtype))
 
 # =========================================== #
 # =========================================== #
@@ -61,32 +59,49 @@ import random
 
 #90% training, 10% for testing
 #split negative and positive to stratify
-neg = [i for i,label in enumerate(labels) if label.data[0]==0]
-pos = [i for i,label in enumerate(labels) if label.data[0]==1]
+neg = [i for i,label in enumerate(labels) if label==0]
+pos = [i for i,label in enumerate(labels) if label==1]
 indices = range(len(data))
 #list not compatible for indexing PyTorch tensors, Use LongTensor instead:
-train_neg = torch.LongTensor(random.sample(neg, round(0.9*len(neg))))
-train_pos = torch.LongTensor(random.sample(pos, round(0.9*len(pos))))
-train_i = torch.cat((train_pos,train_neg))
-test_i =  torch.LongTensor([i for i in indices if i not in train_i])
+train_neg = random.sample(neg, round(0.9*len(neg)))
+train_pos = random.sample(pos, round(0.9*len(pos)))
+train_i = np.hstack((train_pos,train_neg))
+test_i =  [i for i in indices if i not in train_i]
 train_data, test_data, train_y, test_y = data[train_i], data[test_i], labels[train_i], labels[test_i]
+
+#Preprocess
+from sklearn.preprocessing import StandardScaler
+scaler = StandardScaler()
+train_data = scaler.fit_transform(train_data)
+test_data = scaler.transform(test_data)
+
+def NPtoVariable(x):
+    x = Variable(torch.from_numpy(x).type(dtype))
+    return(x)
+
+train_data, test_data, train_y, test_y = NPtoVariable(train_data), NPtoVariable(test_data), NPtoVariable(train_y), NPtoVariable(test_y)
 
 class Net(nn.Module):
     def __init__(self, inc):
         super(Net,self).__init__()
         D = inc.size()[1]
         #fc stands for fully connected
-        self.fc1 = nn.Linear(D, 10)
-        self.fc2 = nn.Linear(10, 5)
+        self.fc1 = nn.Linear(D, 8)
+        self.bn1 = nn.BatchNorm1d(8)
+        self.fc2 = nn.Linear(8, 5)
+        self.bn2 = nn.BatchNorm1d(5)
         self.fc3 = nn.Linear(5, 1)
+        self.elu = nn.ELU()
 
     def forward(self, x):
-        x = F.tanh(self.fc1(x))
-        x = F.tanh(self.fc2(x))
+        x = F.dropout(x, p=0.5)
+        x = self.elu(self.bn1(self.fc1(x)))
+        x = F.dropout(x, p=0.2)
+        x = self.elu(self.bn2(self.fc2(x)))
         x = F.sigmoid(self.fc3(x))
         return x
 
-def SurvivalAndAccuracy(out=out,train_y=train_y, supervised = True):
+def SurvivalAndAccuracy(out,train_y=None, supervised = True):
     survival=[]
     out_numpy=out.data.numpy()
     for o in out_numpy:
@@ -107,16 +122,18 @@ def SurvivalAndAccuracy(out=out,train_y=train_y, supervised = True):
 net = Net(train_data)
 params = list(net.parameters())
 print(params[2])
-learning_rate = 0.001
+decay_rate = 2
+learning_rate = lambda epoch, decay_rate: 1/(1+decay_rate*epoch)
+#learning_rate = lambda epoch: 0.1 if epoch ==0 else 0.09**epoch
 optim_betas = (0.9, 0.999)
-optimizer = torch.optim.Adam(net.parameters(), lr=learning_rate, betas=optim_betas)
 #Binary Cross Entropy applies softmax
 criterion = nn.BCELoss()
 
-num_epochs = 25
+num_epochs = 6
 
-for epoch in range(num_epochs):
-    for iteration in range(5000):
+for epoch in range(1,num_epochs):
+    optimizer = torch.optim.Adam(net.parameters(), lr=learning_rate(epoch, decay_rate), betas=optim_betas)
+    for iteration in range(2000):
         optimizer.zero_grad()
         out = net(train_data)
 
@@ -127,7 +144,7 @@ for epoch in range(num_epochs):
         optimizer.step()
         if iteration %500==0:
             _, acc = SurvivalAndAccuracy(out,train_y)
-            print("Accuracy is %a at iteration %i"%(acc,iteration))
+            print("Epoch %i: Accuracy is %a at iteration %i"%(int(epoch),acc,iteration))
 
 test = net(test_data)
 _, acc = SurvivalAndAccuracy(test,test_y)
@@ -140,9 +157,10 @@ hidden_out = net(hidden_data)
 predictions, _ = SurvivalAndAccuracy(hidden_out,supervised=False)
 #The submission score was 0, Is it reversed or something?
 #Or maybe something went shitty during submitting
-predictions[predictions==0]='t'
-predictions[predictions==1]=0
-predictions[predictions==0]=1
+#predictions[predictions==0]='t'
+#predictions[predictions==1]=0
+#predictions[predictions==0]=1
 ForKaggle = np.column_stack((PassengerId, predictions)).astype(int)
 #Numpy savetxt has some nice docs:https://docs.scipy.org/doc/numpy/reference/generated/numpy.savetxt.html
-np.savetxt('sub.csv', ForKaggle, delimiter=',',fmt='%-10i', header='PassengerId,Survived',comments='')
+np.savetxt('sub.csv', ForKaggle, delimiter=',',fmt='%1i', header='PassengerId,Survived',comments='')
+
