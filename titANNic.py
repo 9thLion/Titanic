@@ -55,51 +55,11 @@ data = Clean(raw)
 # =========================================== #
 # =========================================== #
 
-import random
-
-#90% training, 10% for testing
-#split negative and positive to stratify
-neg = [i for i,label in enumerate(labels) if label==0]
-pos = [i for i,label in enumerate(labels) if label==1]
-indices = range(len(data))
-#list not compatible for indexing PyTorch tensors, Use LongTensor instead:
-train_neg = random.sample(neg, round(0.9*len(neg)))
-train_pos = random.sample(pos, round(0.9*len(pos)))
-train_i = np.hstack((train_pos,train_neg))
-test_i =  [i for i in indices if i not in train_i]
-train_data, test_data, train_y, test_y = data[train_i], data[test_i], labels[train_i], labels[test_i]
-
-#Preprocess
-from sklearn.preprocessing import StandardScaler
-scaler = StandardScaler()
-train_data = scaler.fit_transform(train_data)
-test_data = scaler.transform(test_data)
-
 def NPtoVariable(x):
     x = Variable(torch.from_numpy(x).type(dtype))
     return(x)
 
-train_data, test_data, train_y, test_y = NPtoVariable(train_data), NPtoVariable(test_data), NPtoVariable(train_y), NPtoVariable(test_y)
 
-class Net(nn.Module):
-    def __init__(self, inc):
-        super(Net,self).__init__()
-        D = inc.size()[1]
-        #fc stands for fully connected
-        self.fc1 = nn.Linear(D, 8)
-        self.bn1 = nn.BatchNorm1d(8)
-        self.fc2 = nn.Linear(8, 5)
-        self.bn2 = nn.BatchNorm1d(5)
-        self.fc3 = nn.Linear(5, 1)
-        self.elu = nn.ELU()
-
-    def forward(self, x):
-        x = F.dropout(x, p=0.5)
-        x = self.elu(self.bn1(self.fc1(x)))
-        x = F.dropout(x, p=0.2)
-        x = self.elu(self.bn2(self.fc2(x)))
-        x = F.sigmoid(self.fc3(x))
-        return x
 
 def SurvivalAndAccuracy(out,train_y=None, supervised = True):
     survival=[]
@@ -118,33 +78,112 @@ def SurvivalAndAccuracy(out,train_y=None, supervised = True):
         Accuracy = 'NaN'
     return(survival, Accuracy)
 
+def MyModel(train_data, train_y, batch_size = 64, num_epochs = 30, decay_rate = 5, print_every = 5):
 
-net = Net(train_data)
-params = list(net.parameters())
-print(params[2])
-decay_rate = 2
-learning_rate = lambda epoch, decay_rate: 1/(1+decay_rate*epoch)
-#learning_rate = lambda epoch: 0.1 if epoch ==0 else 0.09**epoch
-optim_betas = (0.9, 0.999)
-#Binary Cross Entropy applies softmax
-criterion = nn.BCELoss()
+    class Net(nn.Module):
+        def __init__(self):
+            super(Net,self).__init__()
+            #fc stands for fully connected
+            self.fc1 = nn.Linear(7, 5)
+            self.bn1 = nn.BatchNorm1d(5)
+            self.fc2 = nn.Linear(5, 3)
+            self.bn2 = nn.BatchNorm1d(3)
+            self.fc3 = nn.Linear(3, 1)
+            self.elu = nn.ELU()
 
-num_epochs = 6
+        def forward(self, x):
+            x = F.dropout(x, p=0.2)
+            x = self.elu(self.bn1(self.fc1(x)))
+            x = F.dropout(x, p=0.1)
+            x = self.elu(self.bn2(self.fc2(x)))
+            x = F.sigmoid(self.fc3(x))
+            return x
 
-for epoch in range(1,num_epochs):
-    optimizer = torch.optim.Adam(net.parameters(), lr=learning_rate(epoch, decay_rate), betas=optim_betas)
-    for iteration in range(2000):
-        optimizer.zero_grad()
-        out = net(train_data)
+    net = Net()
 
-        loss = criterion(out, train_y)
-        loss.backward()
+    learning_rate = lambda epoch, decay_rate: 1/(1+decay_rate*epoch)
+    #learning_rate = lambda epoch: 0.1 if epoch ==0 else 0.09**epoch
+    optim_betas = (0.9, 0.999)
+    #Binary Cross Entropy applies softmax
+    criterion = nn.BCELoss()
 
-        #Update
-        optimizer.step()
-        if iteration %500==0:
-            _, acc = SurvivalAndAccuracy(out,train_y)
-            print("Epoch %i: Accuracy is %a at iteration %i"%(int(epoch),acc,iteration))
+    N = train_data.size()[0]
+    batches = [train_data[i:i+batch_size,:] for i in range (0,N, batch_size)]
+    batches_L = [train_y[i:i+batch_size] for i in range (0,N, batch_size)]
+    iteration = 0
+    for epoch in range(1,num_epochs):
+        optimizer = torch.optim.Adam(net.parameters(), lr=learning_rate(epoch, decay_rate), betas=optim_betas)
+        for t,y in zip(batches, batches_L):
+            optimizer.zero_grad()
+            out = net(t)
+
+            loss = criterion(out, y)
+            loss.backward()
+
+            #Update
+            optimizer.step()
+            iteration+=1
+            if iteration %print_every==0:
+                _, acc = SurvivalAndAccuracy(out,y)
+                print("Epoch %i: Accuracy is %f at iteration %i"%(int(epoch),acc,iteration))
+                total_loss = 0
+
+    return(out, net)
+
+
+#==========
+#==========
+#==========
+
+def NestedCV(K=2):
+
+    import random
+
+    #90% training, 10% for testing
+    #split negative and positive to stratify
+    neg = [i for i,label in enumerate(labels) if label==0]
+    pos = [i for i,label in enumerate(labels) if label==1]
+    indices = range(len(data))
+    #list not compatible for indexing PyTorch tensors, Use LongTensor instead:
+    train_neg = random.sample(neg, round(0.9*len(neg)))
+    train_pos = random.sample(pos, round(0.9*len(pos)))
+    train_i = np.hstack((train_pos,train_neg))
+    np.random.shuffle(train_i)
+    test_i =  [i for i in indices if i not in train_i]
+    train_data, test_data, train_y, test_y = data[train_i], data[test_i], labels[train_i], labels[test_i]
+
+    #Preprocess
+    from sklearn.preprocessing import StandardScaler
+    scaler = StandardScaler()
+    train_data = scaler.fit_transform(train_data)
+    test_data = scaler.transform(test_data)
+
+    from sklearn.model_selection import StratifiedKFold
+
+    skf = StratifiedKFold(n_splits=K, shuffle=True)
+    parameter_list = []
+    error_list = []
+    accuracy_list= []
+
+    #In each iteration 1 fold will be the test set and the rest
+    #will be the train set. The number of iterations will equal
+    #the number of folds.
+    for train_index, test_index in skf.split(train_data, train_y):
+        X_train, X_dev = train_data[train_index], train_data[test_index]
+        y_train, y_dev = train_y[train_index], train_y[test_index]
+
+        X_train, X_dev, y_train, y_dev = NPtoVariable(X_train), NPtoVariable(X_dev), NPtoVariable(y_train), NPtoVariable(y_dev)
+
+        output, model = MyModel(X_train, y_train)
+        y_pred = model(X_dev)
+        _, accu = SurvivalAndAccuracy(y_pred, y_dev)
+        #accuracy#
+        accuracy_list.append(accu)
+        #####
+
+    return(np.mean(accuracy_list))
+
+
 
 test = net(test_data)
 _, acc = SurvivalAndAccuracy(test,test_y)
@@ -155,11 +194,7 @@ raw_test = Clean(raw_test)
 hidden_data = Variable(torch.from_numpy(raw_test).type(dtype))
 hidden_out = net(hidden_data)
 predictions, _ = SurvivalAndAccuracy(hidden_out,supervised=False)
-#The submission score was 0, Is it reversed or something?
-#Or maybe something went shitty during submitting
-#predictions[predictions==0]='t'
-#predictions[predictions==1]=0
-#predictions[predictions==0]=1
+
 ForKaggle = np.column_stack((PassengerId, predictions)).astype(int)
 #Numpy savetxt has some nice docs:https://docs.scipy.org/doc/numpy/reference/generated/numpy.savetxt.html
 np.savetxt('sub.csv', ForKaggle, delimiter=',',fmt='%1i', header='PassengerId,Survived',comments='')
