@@ -78,7 +78,7 @@ def SurvivalAndAccuracy(out,train_y=None, supervised = True):
         Accuracy = 'NaN'
     return(survival, Accuracy)
 
-def MyModel(train_data, train_y, batch_size = 64, num_epochs = 30, decay_rate = 5, print_every = 5):
+def MyModel(train_data, train_y, batch_size = 64, num_epochs = 30, decay_rate = 0.1135, print_every = 5):
 
     class Net(nn.Module):
         def __init__(self):
@@ -100,7 +100,6 @@ def MyModel(train_data, train_y, batch_size = 64, num_epochs = 30, decay_rate = 
             return x
 
     net = Net()
-
     learning_rate = lambda epoch, decay_rate: 1/(1+decay_rate*epoch)
     #learning_rate = lambda epoch: 0.1 if epoch ==0 else 0.09**epoch
     optim_betas = (0.9, 0.999)
@@ -135,7 +134,7 @@ def MyModel(train_data, train_y, batch_size = 64, num_epochs = 30, decay_rate = 
 #==========
 #==========
 
-def NestedCV(K=2):
+def NestedCV(data=data, labels=labels,K=4):
 
     import random
 
@@ -161,33 +160,61 @@ def NestedCV(K=2):
     from sklearn.model_selection import StratifiedKFold
 
     skf = StratifiedKFold(n_splits=K, shuffle=True)
-    parameter_list = []
-    error_list = []
-    accuracy_list= []
-
+    Configurations = {}
+    best_pms=[]
+    with_acc=[]
     #In each iteration 1 fold will be the test set and the rest
     #will be the train set. The number of iterations will equal
     #the number of folds.
+    test_data, test_y = NPtoVariable(test_data), NPtoVariable(test_y)
+    #Randomized Search
+    #Uniform for floats, Randint for integers from uniform, Choice to pick from a specific set (powers of 2 for batches)
+    dr = np.random.uniform(0.001,10,10)
+    bs = np.random.choice([16, 32, 64, 128, 264],10)
+    es = np.random.randint(5,100,10)
+    parameters = np.vstack((dr,bs,es))
     for train_index, test_index in skf.split(train_data, train_y):
         X_train, X_dev = train_data[train_index], train_data[test_index]
         y_train, y_dev = train_y[train_index], train_y[test_index]
 
         X_train, X_dev, y_train, y_dev = NPtoVariable(X_train), NPtoVariable(X_dev), NPtoVariable(y_train), NPtoVariable(y_dev)
 
-        output, model = MyModel(X_train, y_train)
-        y_pred = model(X_dev)
-        _, accu = SurvivalAndAccuracy(y_pred, y_dev)
-        #accuracy#
-        accuracy_list.append(accu)
-        #####
+        #To find the best parameters, we'll be appending 2 lists
+        param_list = []
+        acc_list = []
+        print('start')
+        for p in parameters.T:
+            #Tuning training
+            output, model = MyModel(X_train, y_train, decay_rate=p[0],batch_size=int(p[1]), num_epochs=int(p[2]))
+            y_pred = model(X_dev)
+            _, accu = SurvivalAndAccuracy(y_pred, y_dev)
+            #param_list is a list of np.arrays, take care
+            param_list.append(p)
+            acc_list.append(accu)
 
-    return(np.mean(accuracy_list))
+        #Now use numpy to match the best parameters
+        pars, accs = np.array(param_list), np.array(acc_list)
+        best_p = pars[accs==max(accs)].squeeze()
 
+        #Estimation training
+        X, y= NPtoVariable(train_data), NPtoVariable(train_y)
+        output, model = MyModel(X, y, decay_rate=best_p[0],batch_size=int(best_p[1]), num_epochs=int(best_p[2]))
 
+        best_pms.append(best_p)
+        y_pred = model(test_data)
+        _, accu = SurvivalAndAccuracy(y_pred, test_y)
+        with_acc.append(accu)
 
-test = net(test_data)
-_, acc = SurvivalAndAccuracy(test,test_y)
-print(acc)
+    bp, a = np.array(best_pms), np.array(with_acc)
+    truly_best = bp[a==max(a)].squeeze()
+
+    #Final Training
+    X,y= NPtoVariable(data), NPtoVariable(labels)
+    _, model = MyModel(X, y, decay_rate=truly_best[0],batch_size=int(truly_best[1]), num_epochs=int(truly_best[2]))
+
+    return(bp, np.mean(with_acc), model)
+
+confs, accs, net = NestedCV()
 
 raw_test = Clean(raw_test)
 #Finally Clean
