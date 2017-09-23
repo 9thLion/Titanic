@@ -121,13 +121,13 @@ class MyModel:
             train_data = to_var(train_data)
         if type(train_y)!=Variable:
             train_y = vec_to_var(train_y)
-        
+
         learning_rate = lambda epoch, decay_rate: 1/(1+decay_rate*epoch)
         #learning_rate = lambda epoch: 0.1 if epoch ==0 else 0.09**epoch
         optim_betas = (0.9, 0.999)
         #Binary Cross Entropy applies softmax
         criterion = nn.BCELoss()
-        
+
         N = train_data.size()[0]
 
         batches = [train_data[i:i+self.batch_size,:] for i in range (0,N, self.batch_size)]
@@ -179,7 +179,7 @@ def CV(train_data, train_y, Model, K=5, parameters=None):
     skf = StratifiedKFold(n_splits=K, shuffle=True)
     acc_list = []
     k=1
-    
+
     for train_index, test_index in skf.split(train_data, train_y):
         X_train, X_dev = train_data[train_index], train_data[test_index]
         y_train, y_dev = train_y[train_index], train_y[test_index]
@@ -197,11 +197,11 @@ def CV(train_data, train_y, Model, K=5, parameters=None):
         _, accu = SurvivalAndAccuracy(y_pred, y_dev)
         #param_list is a list of np.arrays, take care
         acc_list.append(accu)
-        
+
         print("Run {} done\n".format(k))
         k+=1
-    
-    #the standard CV will provide an accuracy score and nothing else, 
+
+    #the standard CV will provide an accuracy score and nothing else,
     #in the Nested approach we will get the best hyperparameters as well
     return(np.array(acc_list).mean())
 
@@ -211,13 +211,12 @@ def CV(train_data, train_y, Model, K=5, parameters=None):
 # In[19]:
 
 import pandas as pd
-columns = ['decay_rate','batch_size', 'num_epochs']
+columns = ['decay_rate','batch_size']
 index = range(10)
 parameters = pd.DataFrame(index=index, columns=columns)
 
 parameters['decay_rate'] = np.random.uniform(0.001,10,10)
 parameters['batch_size'] = np.random.choice([16, 32, 64, 128, 264],10)
-parameters['num_epochs'] = np.random.randint(5,100,10)
 
 
 # In[44]:
@@ -242,37 +241,35 @@ def NestedCV(train_data, train_y, K=3, tuning_K=3, parameters=parameters):
         scaler = StandardScaler()
         X_train = scaler.fit_transform(X_train)
         X_dev = scaler.fit_transform(X_dev)
-        
+
         accuracies = []
         for i in range(len(parameters)):
             #TUNING START
             Model = MyModel(decay_rate=parameters['decay_rate'][i],
-                            batch_size=int(parameters['batch_size'][i]), 
-                            num_epochs=int(parameters['num_epochs'][i]))
+                            batch_size=int(parameters['batch_size'][i]))
             accuracy = CV(X_train, y_train, Model, K=tuning_K)
-            
+
             #the indexing of the accuracies will match the indexing of the corresponding parameters
             accuracies.append(accuracy)
-        
+
         accuracies = np.array(accuracies)
         index_of_best_acc = np.where(accuracies == accuracies.max())[0][0]
         #doubt i get the exact same best accuracy anyway since it's a float, not that big of a deal if we do anyway
         parameter_results[ accuracies.max() ] = index_of_best_acc
 
         #TUNING END
-        
+
 
 
         print('Full Run {} completed with best parameters \n{}'.format(k, parameters.iloc[index_of_best_acc]))
         k+=1
-        
-        
+
+
         #We need to calculate the accuracies on a hidden set as well focusing only on the best parameters
         #to avoid having an optimistic estimate
         Model = MyModel(decay_rate=parameters['decay_rate'][index_of_best_acc],
-                        batch_size=int(parameters['batch_size'][index_of_best_acc]), 
-                        num_epochs=int(parameters['num_epochs'][index_of_best_acc]))
-            
+                        batch_size=int(parameters['batch_size'][index_of_best_acc]))
+
         X_train, X_dev, y_train, y_dev = to_var(X_train), to_var(X_dev), vec_to_var(y_train), vec_to_var(y_dev)
         output, model = Model.fit(X_train, y_train)
         y_pred = model(X_dev)
@@ -280,14 +277,13 @@ def NestedCV(train_data, train_y, K=3, tuning_K=3, parameters=parameters):
         true_accuracies.append(accu)
         #ESTIMATION END
     #keep the best parameters out of this run
-    final_best_index = parameter_results[max(parameter_results)]    
+    final_best_index = parameter_results[max(parameter_results)]
     best_parameters = parameters.iloc[final_best_index]
     best_model = MyModel(decay_rate=parameters['decay_rate'][final_best_index],
-                        batch_size=int(parameters['batch_size'][final_best_index]), 
-                        num_epochs=int(parameters['num_epochs'][final_best_index]))
-            
+                        batch_size=int(parameters['batch_size'][final_best_index]))
+
     return best_model, np.array(true_accuracies).mean()
-    
+
 model, accuracy = NestedCV(data, labels)
 
 print('\n True accuracy is: {}'.format(accuracy) )
